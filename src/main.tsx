@@ -25,8 +25,8 @@ const DRIVE_STEP_PAUSE_MS = 300;
 const DRIVE_VIDEO_FPS = 60;
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
-const MOUSE_RANGE = 2;
-const POINTER_MOUSE_SCALE = 0.02;
+const MOUSE_RANGE = 60;
+const POINTER_MOUSE_SCALE = 1.5;
 const VIDEO_EXPORT_TYPES = [
   { mime: "video/mp4;codecs=avc1.42E01E", extension: "mp4", label: "MP4" },
   { mime: "video/mp4;codecs=avc1.4D401E", extension: "mp4", label: "MP4" },
@@ -121,6 +121,17 @@ const keyButtons = [
   { code: 68, label: "D", icon: ArrowRight },
   { code: 32, label: "Space", icon: Square },
 ];
+const mouseButtons = [
+  { code: 1, label: "LMB", icon: MousePointer2 },
+  { code: 2, label: "RMB", icon: MousePointer2 },
+  { code: 4, label: "MMB", icon: MousePointer2 },
+];
+const controlButtons = [...keyButtons, ...mouseButtons];
+const pointerButtonCodes: Record<number, number> = {
+  0: 1,
+  1: 4,
+  2: 2,
+};
 
 function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(SESSION_KEY) === "true");
@@ -136,6 +147,7 @@ function App() {
   const [buttons, setButtons] = useState<number[]>([87]);
   const [mouseX, setMouseX] = useState(0);
   const [mouseY, setMouseY] = useState(0);
+  const [lastMouseSent, setLastMouseSent] = useState({ x: 0, y: 0 });
   const [seedImage, setSeedImage] = useState<string | null>(null);
   const [seedName, setSeedName] = useState("");
   const [frames, setFrames] = useState<string[]>([]);
@@ -152,13 +164,14 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const lookPointerRef = useRef<{ id: number; x: number; y: number } | null>(null);
+  const lookPointerRef = useRef<{ id: number; x: number; y: number; buttonCode?: number } | null>(null);
+  const pendingMouseRef = useRef({ x: 0, y: 0 });
   const recordedFramesRef = useRef<RecordedFrame[]>([]);
   const videoUrlRef = useRef("");
   const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset });
 
   const activeButtonLabels = useMemo(
-    () => keyButtons.filter((item) => buttons.includes(item.code)).map((item) => item.label),
+    () => controlButtons.filter((item) => buttons.includes(item.code)).map((item) => item.label),
     [buttons],
   );
 
@@ -365,6 +378,14 @@ function App() {
 
   async function streamStep(controller: AbortController, firstStep: boolean) {
     const current = controlsRef.current;
+    const pendingMouse = pendingMouseRef.current;
+    const mouse = [
+      Math.round(clampMouse(current.mouseX + pendingMouse.x)),
+      Math.round(clampMouse(current.mouseY + pendingMouse.y)),
+    ];
+    pendingMouseRef.current = { x: 0, y: 0 };
+    setLastMouseSent({ x: mouse[0], y: mouse[1] });
+
     const response = await fetch("/api/waypoint?action=stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -373,7 +394,7 @@ function App() {
         format: "jpeg",
         reset: firstStep ? current.reset : false,
         button: current.buttons,
-        mouse: [current.mouseX, current.mouseY],
+        mouse,
         seed_image: firstStep ? current.seedImage : undefined,
       }),
       signal: controller.signal,
@@ -432,22 +453,46 @@ function App() {
     setMouseY(clampMouse(nextY));
   }
 
-  function updateLookFromPointer(event: PointerEvent<HTMLButtonElement>) {
+  function setButtonHeld(code: number, pressed: boolean) {
+    setButtons((current) => {
+      const has = current.includes(code);
+      if (pressed && !has) return [...current, code];
+      if (!pressed && has) return current.filter((item) => item !== code);
+      return current;
+    });
+  }
+
+  function addPendingMouse(dx: number, dy: number) {
+    pendingMouseRef.current = {
+      x: clampMouse(pendingMouseRef.current.x + dx),
+      y: clampMouse(pendingMouseRef.current.y + dy),
+    };
+  }
+
+  function captureLookPointer(event: PointerEvent<HTMLElement>, includeButton: boolean) {
+    event.preventDefault();
+    const buttonCode = includeButton ? pointerButtonCodes[event.button] : undefined;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    lookPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, buttonCode };
+    if (buttonCode) setButtonHeld(buttonCode, true);
+  }
+
+  function updateLookFromPointer(event: PointerEvent<HTMLElement>) {
     const previous = lookPointerRef.current;
     if (!previous || previous.id !== event.pointerId) return;
 
     const dx = (event.clientX - previous.x) * POINTER_MOUSE_SCALE;
     const dy = (event.clientY - previous.y) * POINTER_MOUSE_SCALE;
-    lookPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
-    setMouseVector(dx, dy);
+    lookPointerRef.current = { ...previous, x: event.clientX, y: event.clientY };
+    addPendingMouse(dx, dy);
   }
 
-  function releaseLookPointer(event: PointerEvent<HTMLButtonElement>) {
+  function releaseLookPointer(event: PointerEvent<HTMLElement>) {
     const previous = lookPointerRef.current;
     if (previous?.id === event.pointerId) {
       lookPointerRef.current = null;
       event.currentTarget.releasePointerCapture(event.pointerId);
-      setMouseVector(0, 0);
+      if (previous.buttonCode) setButtonHeld(previous.buttonCode, false);
     }
   }
 
@@ -657,7 +702,7 @@ function App() {
               Control
             </div>
             <div className="key-grid">
-              {keyButtons.map((item) => {
+              {controlButtons.map((item) => {
                 const Icon = item.icon;
                 const pressed = buttons.includes(item.code);
                 return (
@@ -680,7 +725,7 @@ function App() {
                   type="range"
                   min={-MOUSE_RANGE}
                   max={MOUSE_RANGE}
-                  step="0.05"
+                  step="1"
                   value={mouseX}
                   onChange={(event) => setMouseX(Number(event.target.value))}
                 />
@@ -694,7 +739,7 @@ function App() {
                   type="range"
                   min={-MOUSE_RANGE}
                   max={MOUSE_RANGE}
-                  step="0.05"
+                  step="1"
                   value={mouseY}
                   onChange={(event) => setMouseY(Number(event.target.value))}
                 />
@@ -704,10 +749,7 @@ function App() {
             <button
               className="look-pad"
               type="button"
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture(event.pointerId);
-                lookPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
-              }}
+              onPointerDown={(event) => captureLookPointer(event, false)}
               onPointerMove={updateLookFromPointer}
               onPointerUp={releaseLookPointer}
               onPointerCancel={releaseLookPointer}
@@ -801,7 +843,7 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${Math.max(driveFrames, frames.length)} streamed frames, look ${mouseX.toFixed(2)} ${mouseY.toFixed(2)}`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, mouse ${lastMouseSent.x} ${lastMouseSent.y}`
                   : lastRun
                     ? `${recordedFrames || lastRun.frame_count} frames, ${videoUrl ? videoMime || "video ready" : activeButtonLabels.join("+") || "idle"}`
                     : "Awaiting generation"}
@@ -832,7 +874,15 @@ function App() {
             {frames.length ? (
               <>
                 <figure className="live-viewport">
-                  <img src={`data:${frameMime};base64,${displayFrame || frames[0]}`} alt="Live generated viewport" />
+                  <img
+                    src={`data:${frameMime};base64,${displayFrame || frames[0]}`}
+                    alt="Live generated viewport"
+                    onPointerDown={(event) => captureLookPointer(event, true)}
+                    onPointerMove={updateLookFromPointer}
+                    onPointerUp={releaseLookPointer}
+                    onPointerCancel={releaseLookPointer}
+                    onContextMenu={(event) => event.preventDefault()}
+                  />
                   <figcaption>{streaming ? "Drive" : "Latest"}</figcaption>
                 </figure>
                 <div className="frame-strip">
