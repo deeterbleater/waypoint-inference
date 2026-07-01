@@ -53,6 +53,18 @@ type GenerateResponse = {
 type StreamEvent =
   | {
       ok: true;
+      type: "frame";
+      frame: string;
+      frame_mime?: string;
+      frame_index: number;
+      frame_number: number;
+      step: number;
+      steps: number;
+      step_seconds: number;
+      total_seconds: number;
+    }
+  | {
+      ok: true;
       type: "frame_batch";
       frames: string[];
       frame_mime?: string;
@@ -66,6 +78,7 @@ type StreamEvent =
       ok: true;
       type: "done";
       steps: number;
+      frame_count?: number;
       total_seconds: number;
     }
   | {
@@ -253,10 +266,25 @@ function App() {
         if (!event.ok) {
           throw new Error(event.error);
         }
-        if (event.type === "frame_batch") {
+        if (event.type === "frame") {
+          const frameMime = event.frame_mime || "image/jpeg";
+          setFrames((current) => [...current, event.frame].slice(-4));
+          setFrameMime(frameMime);
+          setDisplayFrame(event.frame);
+          setDriveFrames((current) => Math.max(current + 1, event.frame_number));
+          setLastRun({
+            ok: true,
+            frames: [event.frame],
+            frame_mime: frameMime,
+            frame_count: 1,
+            steps: event.steps,
+            step_seconds: [event.step_seconds],
+            total_seconds: event.total_seconds,
+          });
+        } else if (event.type === "frame_batch") {
           setFrames(event.frames);
           setFrameMime(event.frame_mime || "image/jpeg");
-          animateFrames(event.frames);
+          setDisplayFrame(event.frames.at(-1) || null);
           setDriveFrames((current) => current + event.frame_count);
           setLastRun({
             ok: true,
@@ -329,12 +357,6 @@ function App() {
     if (streaming) {
       addLog("drive", "stopped", "warn");
     }
-  }
-
-  function animateFrames(nextFrames: string[]) {
-    nextFrames.forEach((frame, index) => {
-      window.setTimeout(() => setDisplayFrame(frame), Math.round(index * (1000 / 60)));
-    });
   }
 
   async function resetWorld() {

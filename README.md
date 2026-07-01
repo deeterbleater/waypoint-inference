@@ -23,7 +23,6 @@ WAYPOINT_ENDPOINT_BASE=https://icg2ierx8uoi66-19123.proxy.runpod.net
 The browser never receives `WAYPOINT_API_KEY`; requests go through
 `api/waypoint.js`.
 
-`Start Drive` uses `/api/waypoint?action=stream` to receive NDJSON frame batches
+`Start Drive` uses `/api/waypoint?action=stream` to receive NDJSON frame events
 from the RunPod endpoint and sends the current controls on each step. The stream
-requests JPEG batches and advances a single live viewport through each returned
-frame at 60fps timing.
+requests JPEG output and updates the live viewport once per received frame.
