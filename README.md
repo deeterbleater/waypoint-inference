@@ -27,4 +27,5 @@ The browser never receives `WAYPOINT_API_KEY`; requests go through
 from the RunPod endpoint and sends the current controls on each step. The stream
 requests JPEG output and updates the live viewport once per received frame.
 Each drive captures its streamed frames in the browser; after stopping, use
-`Export Drive Video` to render the captured frames into a downloadable WebM.
+`Export Drive Video` to render the captured frames into a downloadable MP4 when
+the browser supports MP4 recording.

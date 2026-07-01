@@ -25,6 +25,16 @@ const DRIVE_STEP_PAUSE_MS = 300;
 const DRIVE_VIDEO_FPS = 60;
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
+const VIDEO_EXPORT_TYPES = [
+  { mime: "video/mp4;codecs=avc1.42E01E", extension: "mp4", label: "MP4" },
+  { mime: "video/mp4;codecs=avc1.4D401E", extension: "mp4", label: "MP4" },
+  { mime: "video/mp4;codecs=avc1.64001F", extension: "mp4", label: "MP4" },
+  { mime: "video/mp4;codecs=h264", extension: "mp4", label: "MP4" },
+  { mime: "video/mp4", extension: "mp4", label: "MP4" },
+  { mime: "video/webm;codecs=vp9", extension: "webm", label: "WebM" },
+  { mime: "video/webm;codecs=vp8", extension: "webm", label: "WebM" },
+  { mime: "video/webm", extension: "webm", label: "WebM" },
+] as const;
 
 type Health = {
   ok: boolean;
@@ -133,6 +143,8 @@ function App() {
   const [recordedFrames, setRecordedFrames] = useState(0);
   const [videoUrl, setVideoUrl] = useState("");
   const [videoMime, setVideoMime] = useState("");
+  const [videoExtension, setVideoExtension] = useState("mp4");
+  const [videoLabel, setVideoLabel] = useState("MP4");
   const [encodingVideo, setEncodingVideo] = useState(false);
   const [encodingProgress, setEncodingProgress] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -207,6 +219,8 @@ function App() {
     revokeVideoUrl();
     setVideoUrl("");
     setVideoMime("");
+    setVideoExtension("mp4");
+    setVideoLabel("MP4");
     setEncodingProgress(0);
   }
 
@@ -406,9 +420,8 @@ function App() {
     }
   }
 
-  function getVideoMimeType() {
-    const types = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
-    return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  function getVideoExportType() {
+    return VIDEO_EXPORT_TYPES.find(({ mime }) => MediaRecorder.isTypeSupported(mime));
   }
 
   function loadFrameImage({ frame, mime }: RecordedFrame): Promise<HTMLImageElement> {
@@ -434,9 +447,9 @@ function App() {
       return;
     }
 
-    const mimeType = getVideoMimeType();
-    if (!mimeType) {
-      addLog("video", "no supported WebM encoder found", "error");
+    const exportType = getVideoExportType();
+    if (!exportType) {
+      addLog("video", "no supported video encoder found", "error");
       return;
     }
 
@@ -455,7 +468,7 @@ function App() {
 
       stream = canvas.captureStream(DRIVE_VIDEO_FPS);
       recorder = new MediaRecorder(stream, {
-        mimeType,
+        mimeType: exportType.mime,
         videoBitsPerSecond: 10_000_000,
       });
       const activeRecorder = recorder;
@@ -465,7 +478,7 @@ function App() {
           if (event.data.size > 0) chunks.push(event.data);
         };
         activeRecorder.onerror = () => reject(new Error("video encoding failed"));
-        activeRecorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+        activeRecorder.onstop = () => resolve(new Blob(chunks, { type: exportType.mime }));
       });
 
       activeRecorder.start();
@@ -482,8 +495,10 @@ function App() {
       const nextUrl = URL.createObjectURL(blob);
       videoUrlRef.current = nextUrl;
       setVideoUrl(nextUrl);
-      setVideoMime(blob.type || "video/webm");
-      addLog("video", `${capture.length} frames exported`);
+      setVideoMime(blob.type || exportType.mime);
+      setVideoExtension(exportType.extension);
+      setVideoLabel(exportType.label);
+      addLog("video", `${capture.length} frames exported as ${exportType.label}`);
     } catch (error) {
       if (recorder && recorder.state !== "inactive") {
         recorder.stop();
@@ -715,9 +730,9 @@ function App() {
               {encodingVideo ? `Exporting ${encodingProgress}%` : "Export Drive Video"}
             </button>
             {videoUrl ? (
-              <a className="secondary wide" href={videoUrl} download="waypoint-drive.webm">
+              <a className="secondary wide" href={videoUrl} download={`waypoint-drive.${videoExtension}`}>
                 <Download size={18} />
-                Download WebM
+                Download {videoLabel}
               </a>
             ) : null}
             <button className="secondary wide" onClick={generate} disabled={busy || streaming}>
@@ -744,7 +759,12 @@ function App() {
               </p>
             </div>
             {videoUrl ? (
-              <a className="icon-button" href={videoUrl} download="waypoint-drive.webm" title="Download drive video">
+              <a
+                className="icon-button"
+                href={videoUrl}
+                download={`waypoint-drive.${videoExtension}`}
+                title={`Download ${videoLabel} drive video`}
+              >
                 <Download size={18} />
               </a>
             ) : frames[0] ? (
