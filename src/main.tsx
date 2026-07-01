@@ -545,10 +545,10 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${driveFrames} streamed frames, ${activeButtonLabels.join("+") || "idle"}`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, ${activeButtonLabels.join("+") || "idle"}`
                   : lastRun
-                  ? `${lastRun.frame_count} frames, ${lastRun.total_seconds}s, ${activeButtonLabels.join("+") || "idle"}`
-                  : "Awaiting generation"}
+                    ? `${lastRun.frame_count} frames, ${lastRun.total_seconds}s, ${activeButtonLabels.join("+") || "idle"}`
+                    : "Awaiting generation"}
               </p>
             </div>
             {frames[0] ? (
