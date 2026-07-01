@@ -32,3 +32,6 @@ the browser supports MP4 recording.
 Mouse look is sent as raw-ish pointer delta through the stream payload. The
 portal accumulates drag movement between stream requests, supports viewport
 click/drag, and maps mouse buttons to the engine's left/right/middle codes.
+The resolution picker switches the RunPod endpoint between the 720P
+`Overworld/Waypoint-1.5-1B` checkpoint and the 360P
+`Overworld/Waypoint-1.5-1B-360P` checkpoint.

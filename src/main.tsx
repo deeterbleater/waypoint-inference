@@ -40,6 +40,9 @@ const VIDEO_EXPORT_TYPES = [
 
 type Health = {
   ok: boolean;
+  model?: string;
+  model_label?: string;
+  models?: ResolutionOption[];
   engine_loaded: boolean;
   seeded: boolean;
   device: string;
@@ -52,6 +55,13 @@ type Health = {
     memory_allocated_mb?: number;
     memory_reserved_mb?: number;
   };
+};
+
+type ResolutionOption = {
+  key: string;
+  label: string;
+  width: number;
+  height: number;
 };
 
 type GenerateResponse = {
@@ -132,6 +142,10 @@ const pointerButtonCodes: Record<number, number> = {
   1: 4,
   2: 2,
 };
+const defaultResolutions: ResolutionOption[] = [
+  { key: "720p", label: "720P", width: 1280, height: 720 },
+  { key: "360p", label: "360P", width: 640, height: 360 },
+];
 
 function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(SESSION_KEY) === "true");
@@ -143,6 +157,7 @@ function App() {
   const [streaming, setStreaming] = useState(false);
   const [driveFrames, setDriveFrames] = useState(0);
   const [steps, setSteps] = useState(1);
+  const [resolution, setResolution] = useState("720p");
   const [reset, setReset] = useState(true);
   const [buttons, setButtons] = useState<number[]>([87]);
   const [mouseX, setMouseX] = useState(0);
@@ -168,7 +183,7 @@ function App() {
   const pendingMouseRef = useRef({ x: 0, y: 0 });
   const recordedFramesRef = useRef<RecordedFrame[]>([]);
   const videoUrlRef = useRef("");
-  const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset });
+  const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset, resolution });
 
   const activeButtonLabels = useMemo(
     () => controlButtons.filter((item) => buttons.includes(item.code)).map((item) => item.label),
@@ -183,8 +198,10 @@ function App() {
   }, [authed]);
 
   useEffect(() => {
-    controlsRef.current = { buttons, mouseX, mouseY, seedImage, reset };
-  }, [buttons, mouseX, mouseY, seedImage, reset]);
+    controlsRef.current = { buttons, mouseX, mouseY, seedImage, reset, resolution };
+  }, [buttons, mouseX, mouseY, seedImage, reset, resolution]);
+
+  const resolutionOptions = health?.models?.length ? health.models : defaultResolutions;
 
   useEffect(() => {
     if (!authed) return;
@@ -297,6 +314,7 @@ function App() {
     try {
       const payload = await callApi<GenerateResponse>("generate", {
         steps,
+        model: resolution,
         reset,
         button: buttons,
         mouse: [mouseX, mouseY],
@@ -392,6 +410,7 @@ function App() {
       body: JSON.stringify({
         steps: 1,
         format: "jpeg",
+        model: current.resolution,
         reset: firstStep ? current.reset : false,
         button: current.buttons,
         mouse,
@@ -589,7 +608,7 @@ function App() {
   async function resetWorld() {
     setBusy(true);
     try {
-      await callApi("reset", {});
+      await callApi("reset", { model: resolution });
       setReset(true);
       setFrames([]);
       setDisplayFrame(null);
@@ -686,8 +705,8 @@ function App() {
                 </dd>
               </div>
               <div>
-                <dt>State</dt>
-                <dd>{health?.seeded ? "seeded" : "fresh"}</dd>
+                <dt>Model</dt>
+                <dd>{health?.model_label || resolution.toUpperCase()}</dd>
               </div>
               <div>
                 <dt>Torch</dt>
@@ -701,6 +720,24 @@ function App() {
               <MousePointer2 size={16} />
               Control
             </div>
+            <label className="select-row">
+              Resolution
+              <select
+                value={resolution}
+                onChange={(event) => {
+                  setResolution(event.target.value);
+                  setReset(true);
+                  resetDriveCapture();
+                }}
+                disabled={streaming || busy}
+              >
+                {resolutionOptions.map((item) => (
+                  <option key={item.key} value={item.key}>
+                    {item.label} ({item.width}x{item.height})
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="key-grid">
               {controlButtons.map((item) => {
                 const Icon = item.icon;
