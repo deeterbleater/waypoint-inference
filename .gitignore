@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.env.local
+.vercel
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+dev-generated-*.png

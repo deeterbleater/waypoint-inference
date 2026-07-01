@@ -1,0 +1,24 @@
+# Waypoint Inference Portal
+
+Browser portal for the RunPod-hosted `Overworld/Waypoint-1.5-1B` endpoint.
+
+## Local
+
+```bash
+npm install
+npm run dev
+```
+
+The portal password is hardcoded in `src/main.tsx`.
+
+## Vercel Env
+
+Set these on the Vercel project:
+
+```bash
+WAYPOINT_API_KEY=...
+WAYPOINT_ENDPOINT_BASE=https://icg2ierx8uoi66-19123.proxy.runpod.net
+```
+
+The browser never receives `WAYPOINT_API_KEY`; requests go through
+`api/waypoint.js`.

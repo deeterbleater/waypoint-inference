@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/waypoint.js": {
+      "maxDuration": 60
+    }
+  }
+}
