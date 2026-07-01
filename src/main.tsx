@@ -22,6 +22,9 @@ import "./styles.css";
 const PORTAL_PASSWORD = "waypoint";
 const SESSION_KEY = "waypoint.portal.authed";
 const DRIVE_STEP_PAUSE_MS = 300;
+const DRIVE_VIDEO_FPS = 60;
+const FRAME_WIDTH = 1280;
+const FRAME_HEIGHT = 720;
 
 type Health = {
   ok: boolean;
@@ -94,6 +97,11 @@ type LogEntry = {
   kind: "ok" | "warn" | "error";
 };
 
+type RecordedFrame = {
+  frame: string;
+  mime: string;
+};
+
 const keyButtons = [
   { code: 87, label: "W", icon: ArrowUp },
   { code: 65, label: "A", icon: ArrowLeft },
@@ -122,9 +130,16 @@ function App() {
   const [frameMime, setFrameMime] = useState("image/png");
   const [displayFrame, setDisplayFrame] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
+  const [recordedFrames, setRecordedFrames] = useState(0);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoMime, setVideoMime] = useState("");
+  const [encodingVideo, setEncodingVideo] = useState(false);
+  const [encodingProgress, setEncodingProgress] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const recordedFramesRef = useRef<RecordedFrame[]>([]);
+  const videoUrlRef = useRef("");
   const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset });
 
   const activeButtonLabels = useMemo(
@@ -171,11 +186,39 @@ function App() {
   }, [authed]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      revokeVideoUrl();
+    };
   }, []);
 
   function addLog(label: string, detail: string, kind: LogEntry["kind"] = "ok") {
     setLogs((current) => [{ id: Date.now(), label, detail, kind }, ...current].slice(0, 8));
+  }
+
+  function revokeVideoUrl() {
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = "";
+    }
+  }
+
+  function clearVideoUrl() {
+    revokeVideoUrl();
+    setVideoUrl("");
+    setVideoMime("");
+    setEncodingProgress(0);
+  }
+
+  function resetDriveCapture() {
+    recordedFramesRef.current = [];
+    setRecordedFrames(0);
+    clearVideoUrl();
+  }
+
+  function recordDriveFrame(frame: string, mime: string) {
+    recordedFramesRef.current.push({ frame, mime });
+    setRecordedFrames(recordedFramesRef.current.length);
   }
 
   function unlock(event: FormEvent) {
@@ -268,6 +311,7 @@ function App() {
         }
         if (event.type === "frame") {
           const frameMime = event.frame_mime || "image/jpeg";
+          recordDriveFrame(event.frame, frameMime);
           setFrames((current) => [...current, event.frame].slice(-4));
           setFrameMime(frameMime);
           setDisplayFrame(event.frame);
@@ -282,8 +326,10 @@ function App() {
             total_seconds: event.total_seconds,
           });
         } else if (event.type === "frame_batch") {
+          const frameMime = event.frame_mime || "image/jpeg";
+          event.frames.forEach((frame) => recordDriveFrame(frame, frameMime));
           setFrames(event.frames);
-          setFrameMime(event.frame_mime || "image/jpeg");
+          setFrameMime(frameMime);
           setDisplayFrame(event.frames.at(-1) || null);
           setDriveFrames((current) => current + event.frame_count);
           setLastRun({
@@ -329,6 +375,7 @@ function App() {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    resetDriveCapture();
     setStreaming(true);
     setDriveFrames(0);
     addLog("drive", "started");
@@ -359,6 +406,95 @@ function App() {
     }
   }
 
+  function getVideoMimeType() {
+    const types = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function loadFrameImage({ frame, mime }: RecordedFrame): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("could not decode recorded frame"));
+      image.src = `data:${mime};base64,${frame}`;
+    });
+  }
+
+  async function exportDriveVideo() {
+    if (encodingVideo) return;
+
+    const capture = recordedFramesRef.current.slice();
+    if (!capture.length) {
+      addLog("video", "no drive frames captured", "warn");
+      return;
+    }
+
+    if (typeof MediaRecorder === "undefined") {
+      addLog("video", "MediaRecorder is not available in this browser", "error");
+      return;
+    }
+
+    const mimeType = getVideoMimeType();
+    if (!mimeType) {
+      addLog("video", "no supported WebM encoder found", "error");
+      return;
+    }
+
+    clearVideoUrl();
+    setEncodingVideo(true);
+    setEncodingProgress(0);
+    let stream: MediaStream | null = null;
+    let recorder: MediaRecorder | null = null;
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = FRAME_WIDTH;
+      canvas.height = FRAME_HEIGHT;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("could not create canvas context");
+
+      stream = canvas.captureStream(DRIVE_VIDEO_FPS);
+      recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 10_000_000,
+      });
+      const activeRecorder = recorder;
+      const chunks: BlobPart[] = [];
+      const stopped = new Promise<Blob>((resolve, reject) => {
+        activeRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+        };
+        activeRecorder.onerror = () => reject(new Error("video encoding failed"));
+        activeRecorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+      });
+
+      activeRecorder.start();
+      const frameDuration = 1000 / DRIVE_VIDEO_FPS;
+      for (let index = 0; index < capture.length; index += 1) {
+        const image = await loadFrameImage(capture[index]);
+        context.drawImage(image, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+        setEncodingProgress(Math.round(((index + 1) / capture.length) * 100));
+        await new Promise((resolve) => window.setTimeout(resolve, frameDuration));
+      }
+
+      activeRecorder.stop();
+      const blob = await stopped;
+      const nextUrl = URL.createObjectURL(blob);
+      videoUrlRef.current = nextUrl;
+      setVideoUrl(nextUrl);
+      setVideoMime(blob.type || "video/webm");
+      addLog("video", `${capture.length} frames exported`);
+    } catch (error) {
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      addLog("video", error instanceof Error ? error.message : "export failed", "error");
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+      setEncodingVideo(false);
+    }
+  }
+
   async function resetWorld() {
     setBusy(true);
     try {
@@ -367,6 +503,7 @@ function App() {
       setFrames([]);
       setDisplayFrame(null);
       setLastRun(null);
+      resetDriveCapture();
       addLog("reset", "state cleared");
       void fetchHealth();
     } catch (error) {
@@ -569,6 +706,20 @@ function App() {
               {streaming ? <Square size={18} /> : <Play size={18} />}
               {streaming ? "Stop Drive" : "Start Drive"}
             </button>
+            <button
+              className="secondary wide"
+              onClick={exportDriveVideo}
+              disabled={streaming || busy || encodingVideo || recordedFrames === 0}
+            >
+              {encodingVideo ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
+              {encodingVideo ? `Exporting ${encodingProgress}%` : "Export Drive Video"}
+            </button>
+            {videoUrl ? (
+              <a className="secondary wide" href={videoUrl} download="waypoint-drive.webm">
+                <Download size={18} />
+                Download WebM
+              </a>
+            ) : null}
             <button className="secondary wide" onClick={generate} disabled={busy || streaming}>
               {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
               Generate
@@ -586,13 +737,17 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${Math.max(driveFrames, frames.length)} streamed frames, ${activeButtonLabels.join("+") || "idle"}`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, ${recordedFrames} recorded`
                   : lastRun
-                    ? `${lastRun.frame_count} frames, ${lastRun.total_seconds}s, ${activeButtonLabels.join("+") || "idle"}`
+                    ? `${recordedFrames || lastRun.frame_count} frames, ${videoUrl ? videoMime || "video ready" : activeButtonLabels.join("+") || "idle"}`
                     : "Awaiting generation"}
               </p>
             </div>
-            {frames[0] ? (
+            {videoUrl ? (
+              <a className="icon-button" href={videoUrl} download="waypoint-drive.webm" title="Download drive video">
+                <Download size={18} />
+              </a>
+            ) : frames[0] ? (
               <a
                 className="icon-button"
                 href={`data:${frameMime};base64,${displayFrame || frames[0]}`}

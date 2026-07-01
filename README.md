@@ -26,3 +26,5 @@ The browser never receives `WAYPOINT_API_KEY`; requests go through
 `Start Drive` uses `/api/waypoint?action=stream` to receive NDJSON frame events
 from the RunPod endpoint and sends the current controls on each step. The stream
 requests JPEG output and updates the live viewport once per received frame.
+Each drive captures its streamed frames in the browser; after stopping, use
+`Export Drive Video` to render the captured frames into a downloadable WebM.
