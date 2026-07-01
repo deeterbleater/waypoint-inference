@@ -21,6 +21,7 @@ import "./styles.css";
 
 const PORTAL_PASSWORD = "waypoint";
 const SESSION_KEY = "waypoint.portal.authed";
+const DRIVE_STEP_PAUSE_MS = 300;
 
 type Health = {
   ok: boolean;
@@ -300,6 +301,7 @@ function App() {
         await streamStep(controller, firstStep);
         firstStep = false;
         setReset(false);
+        await new Promise((resolve) => window.setTimeout(resolve, DRIVE_STEP_PAUSE_MS));
       }
     } catch (error) {
       if (!controller.signal.aborted) {
