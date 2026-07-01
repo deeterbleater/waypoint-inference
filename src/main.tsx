@@ -48,6 +48,29 @@ type GenerateResponse = {
   error?: string;
 };
 
+type StreamEvent =
+  | {
+      ok: true;
+      type: "frame_batch";
+      frames: string[];
+      frame_count: number;
+      step: number;
+      steps: number;
+      step_seconds: number;
+      total_seconds: number;
+    }
+  | {
+      ok: true;
+      type: "done";
+      steps: number;
+      total_seconds: number;
+    }
+  | {
+      ok: false;
+      type: "error";
+      error: string;
+    };
+
 type LogEntry = {
   id: number;
   label: string;
@@ -70,6 +93,8 @@ function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [driveFrames, setDriveFrames] = useState(0);
   const [steps, setSteps] = useState(1);
   const [reset, setReset] = useState(true);
   const [buttons, setButtons] = useState<number[]>([87]);
@@ -81,6 +106,8 @@ function App() {
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset });
 
   const activeButtonLabels = useMemo(
     () => keyButtons.filter((item) => buttons.includes(item.code)).map((item) => item.label),
@@ -93,6 +120,41 @@ function App() {
     const timer = window.setInterval(fetchHealth, 12000);
     return () => window.clearInterval(timer);
   }, [authed]);
+
+  useEffect(() => {
+    controlsRef.current = { buttons, mouseX, mouseY, seedImage, reset };
+  }, [buttons, mouseX, mouseY, seedImage, reset]);
+
+  useEffect(() => {
+    if (!authed) return;
+
+    const codes = new Set(keyButtons.map((item) => item.code));
+    const updateKey = (event: KeyboardEvent, pressed: boolean) => {
+      if (!codes.has(event.keyCode)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT") return;
+      event.preventDefault();
+      setButtons((current) => {
+        const has = current.includes(event.keyCode);
+        if (pressed && !has) return [...current, event.keyCode];
+        if (!pressed && has) return current.filter((item) => item !== event.keyCode);
+        return current;
+      });
+    };
+
+    const down = (event: KeyboardEvent) => updateKey(event, true);
+    const up = (event: KeyboardEvent) => updateKey(event, false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [authed]);
+
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
   function addLog(label: string, detail: string, kind: LogEntry["kind"] = "ok") {
     setLogs((current) => [{ id: Date.now(), label, detail, kind }, ...current].slice(0, 8));
@@ -110,6 +172,7 @@ function App() {
   }
 
   function lock() {
+    stopDrive();
     localStorage.removeItem(SESSION_KEY);
     setAuthed(false);
     setPassword("");
@@ -158,6 +221,101 @@ function App() {
       addLog("generate", message, "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function readStream(response: Response) {
+    if (!response.body) {
+      throw new Error("stream response had no body");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as StreamEvent;
+        if (!event.ok) {
+          throw new Error(event.error);
+        }
+        if (event.type === "frame_batch") {
+          setFrames(event.frames);
+          setDriveFrames((current) => current + event.frame_count);
+          setLastRun({
+            ok: true,
+            frames: event.frames,
+            frame_count: event.frame_count,
+            steps: event.steps,
+            step_seconds: [event.step_seconds],
+            total_seconds: event.total_seconds,
+          });
+        }
+      }
+    }
+  }
+
+  async function streamStep(controller: AbortController, firstStep: boolean) {
+    const current = controlsRef.current;
+    const response = await fetch("/api/waypoint?action=stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        steps: 1,
+        reset: firstStep ? current.reset : false,
+        button: current.buttons,
+        mouse: [current.mouseX, current.mouseY],
+        seed_image: firstStep ? current.seedImage : undefined,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error || "stream failed");
+    }
+
+    await readStream(response);
+  }
+
+  async function startDrive() {
+    if (streaming || busy) return;
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setStreaming(true);
+    setDriveFrames(0);
+    addLog("drive", "started");
+
+    let firstStep = true;
+    try {
+      while (!controller.signal.aborted) {
+        await streamStep(controller, firstStep);
+        firstStep = false;
+        setReset(false);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        addLog("drive", error instanceof Error ? error.message : "stream failed", "error");
+      }
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+      void fetchHealth();
+    }
+  }
+
+  function stopDrive() {
+    abortRef.current?.abort();
+    if (streaming) {
+      addLog("drive", "stopped", "warn");
     }
   }
 
@@ -366,11 +524,15 @@ function App() {
               <input type="checkbox" checked={reset} onChange={(event) => setReset(event.target.checked)} />
               Reset
             </label>
-            <button className="primary wide" onClick={generate} disabled={busy}>
+            <button className={streaming ? "danger wide" : "primary wide"} onClick={streaming ? stopDrive : startDrive} disabled={busy}>
+              {streaming ? <Square size={18} /> : <Play size={18} />}
+              {streaming ? "Stop Drive" : "Start Drive"}
+            </button>
+            <button className="secondary wide" onClick={generate} disabled={busy || streaming}>
               {busy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
               Generate
             </button>
-            <button className="secondary wide" onClick={resetWorld} disabled={busy}>
+            <button className="secondary wide" onClick={resetWorld} disabled={busy || streaming}>
               <RotateCcw size={18} />
               Reset State
             </button>
@@ -382,7 +544,9 @@ function App() {
             <div>
               <h2>Frames</h2>
               <p>
-                {lastRun
+                {streaming
+                  ? `${driveFrames} streamed frames, ${activeButtonLabels.join("+") || "idle"}`
+                  : lastRun
                   ? `${lastRun.frame_count} frames, ${lastRun.total_seconds}s, ${activeButtonLabels.join("+") || "idle"}`
                   : "Awaiting generation"}
               </p>

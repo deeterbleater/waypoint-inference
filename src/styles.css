@@ -272,6 +272,7 @@ a {
 .primary,
 .secondary,
 .ghost,
+.danger,
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -285,7 +286,8 @@ a {
 
 .primary,
 .secondary,
-.ghost {
+.ghost,
+.danger {
   min-height: 42px;
   padding: 0 14px;
 }
@@ -304,6 +306,13 @@ a {
   border-color: #3b4741;
   background: #202528;
   color: #edf3ee;
+}
+
+.danger {
+  border-color: #7c3c3f;
+  background: #4a2025;
+  color: #ffd7dc;
+  font-weight: 800;
 }
 
 .ghost {
