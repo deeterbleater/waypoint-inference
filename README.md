@@ -35,3 +35,6 @@ click/drag, and maps mouse buttons to the engine's left/right/middle codes.
 The resolution picker switches the RunPod endpoint between the 720P
 `Overworld/Waypoint-1.5-1B` checkpoint and the 360P
 `Overworld/Waypoint-1.5-1B-360P` checkpoint.
+Drive mode uses the binary stream endpoint when available. Frames are sent as
+raw JPEG bytes with per-frame generation/decode/encode/write timings, then
+painted directly onto a canvas to keep React out of the viewport hot path.

@@ -13,7 +13,7 @@ function upstreamUrl(path) {
 
 export default async function handler(req, res) {
   const action = String(req.query.action || "");
-  if (!["health", "generate", "reset", "stream"].includes(action)) {
+  if (!["health", "generate", "reset", "stream", "stream-binary"].includes(action)) {
     sendJson(res, 404, { ok: false, error: "unknown action" });
     return;
   }
@@ -31,10 +31,10 @@ export default async function handler(req, res) {
       method,
       headers,
       body: method === "POST" ? JSON.stringify(req.body || {}) : undefined,
-      signal: AbortSignal.timeout(["generate", "stream"].includes(action) ? 90000 : 15000),
+      signal: AbortSignal.timeout(["generate", "stream", "stream-binary"].includes(action) ? 90000 : 15000),
     });
 
-    if (action === "stream") {
+    if (action === "stream" || action === "stream-binary") {
       res.writeHead(upstream.status, {
         "Content-Type": upstream.headers.get("Content-Type") || "application/x-ndjson",
         "Cache-Control": "no-store, no-transform",

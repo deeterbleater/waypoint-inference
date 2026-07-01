@@ -21,7 +21,8 @@ import "./styles.css";
 
 const PORTAL_PASSWORD = "waypoint";
 const SESSION_KEY = "waypoint.portal.authed";
-const DRIVE_STEP_PAUSE_MS = 300;
+const DRIVE_STEP_PAUSE_MS = 0;
+const DRIVE_JPEG_QUALITY = 70;
 const DRIVE_VIDEO_FPS = 60;
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
@@ -68,11 +69,21 @@ type GenerateResponse = {
   ok: boolean;
   frames: string[];
   frame_mime?: string;
+  frame_width?: number;
+  frame_height?: number;
   frame_count: number;
   steps: number;
   step_seconds: number[];
   total_seconds: number;
   error?: string;
+};
+
+type FrameTimings = {
+  gen_ms?: number;
+  decode_ms?: number;
+  encode_ms?: number;
+  write_ms?: number;
+  total_ms?: number;
 };
 
 type StreamEvent =
@@ -81,12 +92,21 @@ type StreamEvent =
       type: "frame";
       frame: string;
       frame_mime?: string;
+      frame_width?: number;
+      frame_height?: number;
       frame_index: number;
       frame_number: number;
       step: number;
       steps: number;
       step_seconds: number;
       total_seconds: number;
+      timings?: FrameTimings;
+    }
+  | {
+      ok: true;
+      type: "metric";
+      frame_number: number;
+      timings: FrameTimings;
     }
   | {
       ok: true;
@@ -120,9 +140,17 @@ type LogEntry = {
 };
 
 type RecordedFrame = {
-  frame: string;
+  frame?: string;
+  blob?: Blob;
   mime: string;
 };
+
+type PreviewFrame = {
+  url: string;
+  mime: string;
+};
+
+type BinaryStreamEvent = Omit<Extract<StreamEvent, { type: "frame" }>, "frame"> | Exclude<StreamEvent, { type: "frame" | "frame_batch" }>;
 
 const keyButtons = [
   { code: 87, label: "W", icon: ArrowUp },
@@ -168,6 +196,10 @@ function App() {
   const [frames, setFrames] = useState<string[]>([]);
   const [frameMime, setFrameMime] = useState("image/png");
   const [displayFrame, setDisplayFrame] = useState<string | null>(null);
+  const [hasLiveFrame, setHasLiveFrame] = useState(false);
+  const [previewFrames, setPreviewFrames] = useState<PreviewFrame[]>([]);
+  const [frameSize, setFrameSize] = useState({ width: FRAME_WIDTH, height: FRAME_HEIGHT });
+  const [perf, setPerf] = useState<FrameTimings | null>(null);
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
   const [recordedFrames, setRecordedFrames] = useState(0);
   const [videoUrl, setVideoUrl] = useState("");
@@ -177,11 +209,14 @@ function App() {
   const [encodingVideo, setEncodingVideo] = useState(false);
   const [encodingProgress, setEncodingProgress] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lookPointerRef = useRef<{ id: number; x: number; y: number; buttonCode?: number } | null>(null);
   const pendingMouseRef = useRef({ x: 0, y: 0 });
   const recordedFramesRef = useRef<RecordedFrame[]>([]);
+  const previewUrlsRef = useRef<string[]>([]);
+  const frameSizeRef = useRef({ width: FRAME_WIDTH, height: FRAME_HEIGHT });
   const videoUrlRef = useRef("");
   const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset, resolution });
 
@@ -234,6 +269,7 @@ function App() {
     return () => {
       abortRef.current?.abort();
       revokeVideoUrl();
+      clearPreviewUrls();
     };
   }, []);
 
@@ -257,15 +293,106 @@ function App() {
     setEncodingProgress(0);
   }
 
+  function clearPreviewUrls() {
+    previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrlsRef.current = [];
+    setPreviewFrames([]);
+  }
+
+  function setActiveFrameSize(width?: number, height?: number) {
+    if (!width || !height) return;
+    const next = { width, height };
+    frameSizeRef.current = next;
+    setFrameSize(next);
+  }
+
   function resetDriveCapture() {
     recordedFramesRef.current = [];
     setRecordedFrames(0);
+    clearPreviewUrls();
     clearVideoUrl();
   }
 
-  function recordDriveFrame(frame: string, mime: string) {
-    recordedFramesRef.current.push({ frame, mime });
+  function recordDriveFrame(frame: RecordedFrame) {
+    recordedFramesRef.current.push(frame);
     setRecordedFrames(recordedFramesRef.current.length);
+  }
+
+  function addPreviewFrame(blob: Blob, mime: string) {
+    const url = URL.createObjectURL(blob);
+    previewUrlsRef.current.push(url);
+    setPreviewFrames((current) => {
+      const next = [...current, { url, mime }];
+      const dropped = next.splice(0, Math.max(0, next.length - 4));
+      dropped.forEach((item) => {
+        URL.revokeObjectURL(item.url);
+        previewUrlsRef.current = previewUrlsRef.current.filter((stored) => stored !== item.url);
+      });
+      return next;
+    });
+  }
+
+  function base64ToBlob(frame: string, mime: string) {
+    const binary = atob(frame);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new Blob([bytes], { type: mime });
+  }
+
+  async function drawFrameBlob(blob: Blob, width?: number, height?: number) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const nextWidth = width || frameSizeRef.current.width;
+    const nextHeight = height || frameSizeRef.current.height;
+    if (canvas.width !== nextWidth) canvas.width = nextWidth;
+    if (canvas.height !== nextHeight) canvas.height = nextHeight;
+    setActiveFrameSize(nextWidth, nextHeight);
+
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+
+    if ("createImageBitmap" in window) {
+      const bitmap = await createImageBitmap(blob);
+      context.drawImage(bitmap, 0, 0, nextWidth, nextHeight);
+      bitmap.close();
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        const image = new Image();
+        const url = URL.createObjectURL(blob);
+        image.onload = () => {
+          context.drawImage(image, 0, 0, nextWidth, nextHeight);
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("could not decode frame"));
+        };
+        image.src = url;
+      });
+    }
+    setHasLiveFrame(true);
+  }
+
+  async function handleFrameBlob(blob: Blob, mime: string, event: Pick<Extract<StreamEvent, { type: "frame" }>, "frame_number" | "frame_width" | "frame_height" | "steps" | "step_seconds" | "total_seconds" | "timings">) {
+    recordDriveFrame({ blob, mime });
+    addPreviewFrame(blob, mime);
+    setFrameMime(mime);
+    setDriveFrames((current) => Math.max(current + 1, event.frame_number));
+    setPerf((current) => ({ ...current, ...event.timings }));
+    setLastRun({
+      ok: true,
+      frames: [],
+      frame_mime: mime,
+      frame_count: event.frame_number,
+      steps: event.steps,
+      step_seconds: [event.step_seconds],
+      total_seconds: event.total_seconds,
+    });
+    await drawFrameBlob(blob, event.frame_width, event.frame_height);
   }
 
   function unlock(event: FormEvent) {
@@ -323,6 +450,12 @@ function App() {
       setFrames(payload.frames);
       setFrameMime(payload.frame_mime || "image/png");
       setDisplayFrame(payload.frames[0] || null);
+      clearPreviewUrls();
+      setHasLiveFrame(Boolean(payload.frames[0]));
+      setActiveFrameSize(payload.frame_width, payload.frame_height);
+      if (payload.frames[0]) {
+        await drawFrameBlob(base64ToBlob(payload.frames[0], payload.frame_mime || "image/png"), payload.frame_width, payload.frame_height);
+      }
       setLastRun(payload);
       setReset(false);
       addLog("generate", `${payload.frame_count} frames in ${payload.total_seconds}s`);
@@ -359,10 +492,14 @@ function App() {
         }
         if (event.type === "frame") {
           const frameMime = event.frame_mime || "image/jpeg";
-          recordDriveFrame(event.frame, frameMime);
+          const blob = base64ToBlob(event.frame, frameMime);
+          recordDriveFrame({ frame: event.frame, mime: frameMime });
           setFrames((current) => [...current, event.frame].slice(-4));
           setFrameMime(frameMime);
           setDisplayFrame(event.frame);
+          setActiveFrameSize(event.frame_width, event.frame_height);
+          setPerf((current) => ({ ...current, ...event.timings }));
+          await drawFrameBlob(blob, event.frame_width, event.frame_height);
           setDriveFrames((current) => Math.max(current + 1, event.frame_number));
           setLastRun({
             ok: true,
@@ -373,12 +510,17 @@ function App() {
             step_seconds: [event.step_seconds],
             total_seconds: event.total_seconds,
           });
+        } else if (event.type === "metric") {
+          setPerf((current) => ({ ...current, ...event.timings }));
         } else if (event.type === "frame_batch") {
           const frameMime = event.frame_mime || "image/jpeg";
-          event.frames.forEach((frame) => recordDriveFrame(frame, frameMime));
+          event.frames.forEach((frame) => recordDriveFrame({ frame, mime: frameMime }));
           setFrames(event.frames);
           setFrameMime(frameMime);
           setDisplayFrame(event.frames.at(-1) || null);
+          if (event.frames.at(-1)) {
+            await drawFrameBlob(base64ToBlob(event.frames.at(-1) || "", frameMime));
+          }
           setDriveFrames((current) => current + event.frame_count);
           setLastRun({
             ok: true,
@@ -394,6 +536,62 @@ function App() {
     }
   }
 
+  function appendBytes(left: Uint8Array<ArrayBuffer>, right: Uint8Array): Uint8Array<ArrayBuffer> {
+    const next = new Uint8Array(right.length);
+    next.set(right);
+    if (!left.length) return next;
+    const merged = new Uint8Array(left.length + right.length);
+    merged.set(left);
+    merged.set(next, left.length);
+    return merged;
+  }
+
+  async function handleBinaryEvent(event: BinaryStreamEvent, imageBytes: Uint8Array) {
+    if (!event.ok) {
+      throw new Error(event.error);
+    }
+    if (event.type === "frame") {
+      const frameMime = event.frame_mime || "image/jpeg";
+      const imageCopy = new Uint8Array(imageBytes.byteLength);
+      imageCopy.set(imageBytes);
+      const blob = new Blob([imageCopy.buffer], { type: frameMime });
+      await handleFrameBlob(blob, frameMime, event);
+    } else if (event.type === "metric") {
+      setPerf((current) => ({ ...current, ...event.timings }));
+    }
+  }
+
+  async function readBinaryStream(response: Response) {
+    if (!response.body) {
+      throw new Error("stream response had no body");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer = appendBytes(buffer, value);
+
+      while (buffer.length >= 8) {
+        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        const headerLength = view.getUint32(0);
+        const imageLength = view.getUint32(4);
+        const messageLength = 8 + headerLength + imageLength;
+        if (buffer.length < messageLength) break;
+
+        const headerBytes = buffer.slice(8, 8 + headerLength);
+        const imageBytes = buffer.slice(8 + headerLength, messageLength);
+        buffer = buffer.slice(messageLength);
+
+        const event = JSON.parse(decoder.decode(headerBytes)) as BinaryStreamEvent;
+        await handleBinaryEvent(event, imageBytes);
+      }
+    }
+  }
+
   async function streamStep(controller: AbortController, firstStep: boolean) {
     const current = controlsRef.current;
     const pendingMouse = pendingMouseRef.current;
@@ -404,12 +602,13 @@ function App() {
     pendingMouseRef.current = { x: 0, y: 0 };
     setLastMouseSent({ x: mouse[0], y: mouse[1] });
 
-    const response = await fetch("/api/waypoint?action=stream", {
+    const response = await fetch("/api/waypoint?action=stream-binary", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         steps: 1,
         format: "jpeg",
+        quality: DRIVE_JPEG_QUALITY,
         model: current.resolution,
         reset: firstStep ? current.reset : false,
         button: current.buttons,
@@ -424,7 +623,11 @@ function App() {
       throw new Error(payload?.error || "stream failed");
     }
 
-    await readStream(response);
+    if (response.headers.get("Content-Type")?.includes("application/vnd.waypoint.frames")) {
+      await readBinaryStream(response);
+    } else {
+      await readStream(response);
+    }
   }
 
   async function startDrive() {
@@ -443,7 +646,9 @@ function App() {
         await streamStep(controller, firstStep);
         firstStep = false;
         setReset(false);
-        await new Promise((resolve) => window.setTimeout(resolve, DRIVE_STEP_PAUSE_MS));
+        if (DRIVE_STEP_PAUSE_MS > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, DRIVE_STEP_PAUSE_MS));
+        }
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -519,12 +724,20 @@ function App() {
     return VIDEO_EXPORT_TYPES.find(({ mime }) => MediaRecorder.isTypeSupported(mime));
   }
 
-  function loadFrameImage({ frame, mime }: RecordedFrame): Promise<HTMLImageElement> {
+  function loadFrameImage(recordedFrame: RecordedFrame): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error("could not decode recorded frame"));
-      image.src = `data:${mime};base64,${frame}`;
+      const url = recordedFrame.frame ? `data:${recordedFrame.mime};base64,${recordedFrame.frame}` : undefined;
+      const objectUrl = url ? "" : URL.createObjectURL(recordedFrame.blob!);
+      image.onload = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        resolve(image);
+      };
+      image.onerror = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        reject(new Error("could not decode recorded frame"));
+      };
+      image.src = url || objectUrl;
     });
   }
 
@@ -556,8 +769,8 @@ function App() {
 
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = FRAME_WIDTH;
-      canvas.height = FRAME_HEIGHT;
+      canvas.width = frameSizeRef.current.width;
+      canvas.height = frameSizeRef.current.height;
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) throw new Error("could not create canvas context");
 
@@ -580,7 +793,7 @@ function App() {
       const frameDuration = 1000 / DRIVE_VIDEO_FPS;
       for (let index = 0; index < capture.length; index += 1) {
         const image = await loadFrameImage(capture[index]);
-        context.drawImage(image, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
         setEncodingProgress(Math.round(((index + 1) / capture.length) * 100));
         await new Promise((resolve) => window.setTimeout(resolve, frameDuration));
       }
@@ -612,7 +825,9 @@ function App() {
       setReset(true);
       setFrames([]);
       setDisplayFrame(null);
+      setHasLiveFrame(false);
       setLastRun(null);
+      setPerf(null);
       resetDriveCapture();
       addLog("reset", "state cleared");
       void fetchHealth();
@@ -669,6 +884,14 @@ function App() {
     );
   }
 
+  const latestPreviewFrame = previewFrames.at(-1);
+  const hasOutput = hasLiveFrame || frames.length > 0 || previewFrames.length > 0;
+  const perfSummary = perf
+    ? `gen ${Math.round(perf.gen_ms || 0)}ms, decode ${Math.round(perf.decode_ms || 0)}ms, encode ${Math.round(
+        perf.encode_ms || 0,
+      )}ms${perf.write_ms !== undefined ? `, write ${Math.round(perf.write_ms)}ms` : ""}`
+    : "";
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -711,6 +934,14 @@ function App() {
               <div>
                 <dt>Torch</dt>
                 <dd>{health?.torch || "..."}</dd>
+              </div>
+              <div>
+                <dt>Gen</dt>
+                <dd>{perf?.gen_ms !== undefined ? `${Math.round(perf.gen_ms)} ms` : "..."}</dd>
+              </div>
+              <div>
+                <dt>Encode</dt>
+                <dd>{perf?.encode_ms !== undefined ? `${Math.round(perf.encode_ms)} ms` : "..."}</dd>
               </div>
             </dl>
           </div>
@@ -880,7 +1111,7 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${Math.max(driveFrames, frames.length)} streamed frames, mouse ${lastMouseSent.x} ${lastMouseSent.y}`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, mouse ${lastMouseSent.x} ${lastMouseSent.y}${perfSummary ? `, ${perfSummary}` : ""}`
                   : lastRun
                     ? `${recordedFrames || lastRun.frame_count} frames, ${videoUrl ? videoMime || "video ready" : activeButtonLabels.join("+") || "idle"}`
                     : "Awaiting generation"}
@@ -892,6 +1123,15 @@ function App() {
                 href={videoUrl}
                 download={`waypoint-drive.${videoExtension}`}
                 title={`Download ${videoLabel} drive video`}
+              >
+                <Download size={18} />
+              </a>
+            ) : latestPreviewFrame ? (
+              <a
+                className="icon-button"
+                href={latestPreviewFrame.url}
+                download="waypoint-frame.jpg"
+                title="Download latest frame"
               >
                 <Download size={18} />
               </a>
@@ -907,13 +1147,15 @@ function App() {
             ) : null}
           </div>
 
-          <div className={frames.length ? "viewport-stack" : "empty-output"}>
-            {frames.length ? (
+          <div className={hasOutput ? "viewport-stack" : "empty-output"}>
+            {hasOutput ? (
               <>
                 <figure className="live-viewport">
-                  <img
-                    src={`data:${frameMime};base64,${displayFrame || frames[0]}`}
-                    alt="Live generated viewport"
+                  <canvas
+                    ref={canvasRef}
+                    width={frameSize.width}
+                    height={frameSize.height}
+                    aria-label="Live generated viewport"
                     onPointerDown={(event) => captureLookPointer(event, true)}
                     onPointerMove={updateLookFromPointer}
                     onPointerUp={releaseLookPointer}
@@ -922,14 +1164,25 @@ function App() {
                   />
                   <figcaption>{streaming ? "Drive" : "Latest"}</figcaption>
                 </figure>
-                <div className="frame-strip">
-                  {frames.map((frame, index) => (
-                    <figure key={`${frame.slice(0, 24)}-${index}`} className="frame-tile">
-                      <img src={`data:${frameMime};base64,${frame}`} alt={`Generated frame ${index + 1}`} />
-                      <figcaption>{String(index + 1).padStart(2, "0")}</figcaption>
-                    </figure>
-                  ))}
-                </div>
+                {previewFrames.length ? (
+                  <div className="frame-strip">
+                    {previewFrames.map((frame, index) => (
+                      <figure key={frame.url} className="frame-tile">
+                        <img src={frame.url} alt={`Generated frame ${index + 1}`} />
+                        <figcaption>{String(index + 1).padStart(2, "0")}</figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : frames.length ? (
+                  <div className="frame-strip">
+                    {frames.map((frame, index) => (
+                      <figure key={`${frame.slice(0, 24)}-${index}`} className="frame-tile">
+                        <img src={`data:${frameMime};base64,${frame}`} alt={`Generated frame ${index + 1}`} />
+                        <figcaption>{String(index + 1).padStart(2, "0")}</figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : null}
               </>
             ) : (
               <div className="empty-mark">
