@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -25,6 +25,8 @@ const DRIVE_STEP_PAUSE_MS = 300;
 const DRIVE_VIDEO_FPS = 60;
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
+const MOUSE_RANGE = 2;
+const POINTER_MOUSE_SCALE = 0.02;
 const VIDEO_EXPORT_TYPES = [
   { mime: "video/mp4;codecs=avc1.42E01E", extension: "mp4", label: "MP4" },
   { mime: "video/mp4;codecs=avc1.4D401E", extension: "mp4", label: "MP4" },
@@ -150,6 +152,7 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lookPointerRef = useRef<{ id: number; x: number; y: number } | null>(null);
   const recordedFramesRef = useRef<RecordedFrame[]>([]);
   const videoUrlRef = useRef("");
   const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset });
@@ -420,6 +423,34 @@ function App() {
     }
   }
 
+  function clampMouse(value: number) {
+    return Math.max(-MOUSE_RANGE, Math.min(MOUSE_RANGE, value));
+  }
+
+  function setMouseVector(nextX: number, nextY: number) {
+    setMouseX(clampMouse(nextX));
+    setMouseY(clampMouse(nextY));
+  }
+
+  function updateLookFromPointer(event: PointerEvent<HTMLButtonElement>) {
+    const previous = lookPointerRef.current;
+    if (!previous || previous.id !== event.pointerId) return;
+
+    const dx = (event.clientX - previous.x) * POINTER_MOUSE_SCALE;
+    const dy = (event.clientY - previous.y) * POINTER_MOUSE_SCALE;
+    lookPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    setMouseVector(dx, dy);
+  }
+
+  function releaseLookPointer(event: PointerEvent<HTMLButtonElement>) {
+    const previous = lookPointerRef.current;
+    if (previous?.id === event.pointerId) {
+      lookPointerRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      setMouseVector(0, 0);
+    }
+  }
+
   function getVideoExportType() {
     return VIDEO_EXPORT_TYPES.find(({ mime }) => MediaRecorder.isTypeSupported(mime));
   }
@@ -647,9 +678,9 @@ function App() {
                 Mouse X
                 <input
                   type="range"
-                  min="-0.12"
-                  max="0.12"
-                  step="0.01"
+                  min={-MOUSE_RANGE}
+                  max={MOUSE_RANGE}
+                  step="0.05"
                   value={mouseX}
                   onChange={(event) => setMouseX(Number(event.target.value))}
                 />
@@ -661,15 +692,33 @@ function App() {
                 Mouse Y
                 <input
                   type="range"
-                  min="-0.12"
-                  max="0.12"
-                  step="0.01"
+                  min={-MOUSE_RANGE}
+                  max={MOUSE_RANGE}
+                  step="0.05"
                   value={mouseY}
                   onChange={(event) => setMouseY(Number(event.target.value))}
                 />
               </label>
               <span>{mouseY.toFixed(2)}</span>
             </div>
+            <button
+              className="look-pad"
+              type="button"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                lookPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+              }}
+              onPointerMove={updateLookFromPointer}
+              onPointerUp={releaseLookPointer}
+              onPointerCancel={releaseLookPointer}
+              title="Hold and drag to look"
+            >
+              <MousePointer2 size={18} />
+              <span>Look Pad</span>
+            </button>
+            <button className="ghost wide" onClick={() => setMouseVector(0, 0)}>
+              Center Look
+            </button>
           </div>
 
           <div className="panel-section">
@@ -752,7 +801,7 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${Math.max(driveFrames, frames.length)} streamed frames, ${recordedFrames} recorded`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, look ${mouseX.toFixed(2)} ${mouseY.toFixed(2)}`
                   : lastRun
                     ? `${recordedFrames || lastRun.frame_count} frames, ${videoUrl ? videoMime || "video ready" : activeButtonLabels.join("+") || "idle"}`
                     : "Awaiting generation"}

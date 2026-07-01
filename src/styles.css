@@ -241,6 +241,36 @@ a {
   text-align: right;
 }
 
+.look-pad {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  border: 1px solid #3f4c45;
+  border-radius: 6px;
+  background:
+    linear-gradient(transparent 48%, rgba(145, 228, 179, 0.12) 49% 51%, transparent 52%),
+    linear-gradient(90deg, transparent 48%, rgba(145, 228, 179, 0.12) 49% 51%, transparent 52%),
+    #111416;
+  color: #dce9e1;
+  touch-action: none;
+  user-select: none;
+}
+
+.look-pad span {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.look-pad:active {
+  border-color: #91e4b3;
+  background:
+    linear-gradient(transparent 48%, rgba(145, 228, 179, 0.22) 49% 51%, transparent 52%),
+    linear-gradient(90deg, transparent 48%, rgba(145, 228, 179, 0.22) 49% 51%, transparent 52%),
+    #173024;
+}
+
 .hidden-file {
   display: none;
 }

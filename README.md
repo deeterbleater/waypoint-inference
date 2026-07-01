@@ -29,3 +29,5 @@ requests JPEG output and updates the live viewport once per received frame.
 Each drive captures its streamed frames in the browser; after stopping, use
 `Export Drive Video` to render the captured frames into a downloadable MP4 when
 the browser supports MP4 recording.
+Mouse look is sent as velocity through the stream payload; the portal exposes
+wide-range sliders plus a drag look pad for stronger camera control.
