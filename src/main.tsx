@@ -25,8 +25,8 @@ const DRIVE_STEP_PAUSE_MS = 300;
 const DRIVE_VIDEO_FPS = 60;
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
-const MOUSE_RANGE = 60;
-const POINTER_MOUSE_SCALE = 1.5;
+const MOUSE_RANGE = 600;
+const POINTER_MOUSE_SCALE = 6;
 const VIDEO_EXPORT_TYPES = [
   { mime: "video/mp4;codecs=avc1.42E01E", extension: "mp4", label: "MP4" },
   { mime: "video/mp4;codecs=avc1.4D401E", extension: "mp4", label: "MP4" },
@@ -725,7 +725,7 @@ function App() {
                   type="range"
                   min={-MOUSE_RANGE}
                   max={MOUSE_RANGE}
-                  step="1"
+                  step="10"
                   value={mouseX}
                   onChange={(event) => setMouseX(Number(event.target.value))}
                 />
@@ -739,7 +739,7 @@ function App() {
                   type="range"
                   min={-MOUSE_RANGE}
                   max={MOUSE_RANGE}
-                  step="1"
+                  step="10"
                   value={mouseY}
                   onChange={(event) => setMouseY(Number(event.target.value))}
                 />
