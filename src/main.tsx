@@ -134,7 +134,7 @@ function App() {
   const [steps, setSteps] = useState(1);
   const [reset, setReset] = useState(true);
   const [buttons, setButtons] = useState<number[]>([87]);
-  const [mouseX, setMouseX] = useState(0.02);
+  const [mouseX, setMouseX] = useState(0);
   const [mouseY, setMouseY] = useState(0);
   const [seedImage, setSeedImage] = useState<string | null>(null);
   const [seedName, setSeedName] = useState("");
