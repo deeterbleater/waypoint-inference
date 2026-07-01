@@ -42,6 +42,7 @@ type Health = {
 type GenerateResponse = {
   ok: boolean;
   frames: string[];
+  frame_mime?: string;
   frame_count: number;
   steps: number;
   step_seconds: number[];
@@ -54,6 +55,7 @@ type StreamEvent =
       ok: true;
       type: "frame_batch";
       frames: string[];
+      frame_mime?: string;
       frame_count: number;
       step: number;
       steps: number;
@@ -104,6 +106,8 @@ function App() {
   const [seedImage, setSeedImage] = useState<string | null>(null);
   const [seedName, setSeedName] = useState("");
   const [frames, setFrames] = useState<string[]>([]);
+  const [frameMime, setFrameMime] = useState("image/png");
+  const [displayFrame, setDisplayFrame] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -213,6 +217,8 @@ function App() {
         seed_image: seedImage,
       });
       setFrames(payload.frames);
+      setFrameMime(payload.frame_mime || "image/png");
+      setDisplayFrame(payload.frames[0] || null);
       setLastRun(payload);
       setReset(false);
       addLog("generate", `${payload.frame_count} frames in ${payload.total_seconds}s`);
@@ -249,10 +255,13 @@ function App() {
         }
         if (event.type === "frame_batch") {
           setFrames(event.frames);
+          setFrameMime(event.frame_mime || "image/jpeg");
+          animateFrames(event.frames);
           setDriveFrames((current) => current + event.frame_count);
           setLastRun({
             ok: true,
             frames: event.frames,
+            frame_mime: event.frame_mime || "image/jpeg",
             frame_count: event.frame_count,
             steps: event.steps,
             step_seconds: [event.step_seconds],
@@ -270,6 +279,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         steps: 1,
+        format: "jpeg",
         reset: firstStep ? current.reset : false,
         button: current.buttons,
         mouse: [current.mouseX, current.mouseY],
@@ -321,12 +331,19 @@ function App() {
     }
   }
 
+  function animateFrames(nextFrames: string[]) {
+    nextFrames.forEach((frame, index) => {
+      window.setTimeout(() => setDisplayFrame(frame), Math.round(index * (1000 / 60)));
+    });
+  }
+
   async function resetWorld() {
     setBusy(true);
     try {
       await callApi("reset", {});
       setReset(true);
       setFrames([]);
+      setDisplayFrame(null);
       setLastRun(null);
       addLog("reset", "state cleared");
       void fetchHealth();
@@ -556,7 +573,7 @@ function App() {
             {frames[0] ? (
               <a
                 className="icon-button"
-                href={`data:image/png;base64,${frames[0]}`}
+                href={`data:${frameMime};base64,${displayFrame || frames[0]}`}
                 download="waypoint-frame.png"
                 title="Download first frame"
               >
@@ -565,14 +582,22 @@ function App() {
             ) : null}
           </div>
 
-          <div className={frames.length ? "frame-grid" : "empty-output"}>
+          <div className={frames.length ? "viewport-stack" : "empty-output"}>
             {frames.length ? (
-              frames.map((frame, index) => (
-                <figure key={`${frame.slice(0, 24)}-${index}`} className="frame-tile">
-                  <img src={`data:image/png;base64,${frame}`} alt={`Generated frame ${index + 1}`} />
-                  <figcaption>{String(index + 1).padStart(2, "0")}</figcaption>
+              <>
+                <figure className="live-viewport">
+                  <img src={`data:${frameMime};base64,${displayFrame || frames[0]}`} alt="Live generated viewport" />
+                  <figcaption>{streaming ? "Drive" : "Latest"}</figcaption>
                 </figure>
-              ))
+                <div className="frame-strip">
+                  {frames.map((frame, index) => (
+                    <figure key={`${frame.slice(0, 24)}-${index}`} className="frame-tile">
+                      <img src={`data:${frameMime};base64,${frame}`} alt={`Generated frame ${index + 1}`} />
+                      <figcaption>{String(index + 1).padStart(2, "0")}</figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </>
             ) : (
               <div className="empty-mark">
                 <Play size={24} />

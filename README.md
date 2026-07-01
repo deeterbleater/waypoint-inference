@@ -24,4 +24,6 @@ The browser never receives `WAYPOINT_API_KEY`; requests go through
 `api/waypoint.js`.
 
 `Start Drive` uses `/api/waypoint?action=stream` to receive NDJSON frame batches
-from the RunPod endpoint and sends the current controls on each step.
+from the RunPod endpoint and sends the current controls on each step. The stream
+requests JPEG batches and advances a single live viewport through each returned
+frame at 60fps timing.
