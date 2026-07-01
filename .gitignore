@@ -7,4 +7,4 @@ dist
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
-dev-generated-*.png
+*-generated-*.png
