@@ -21,6 +21,7 @@ import "./styles.css";
 
 const PORTAL_PASSWORD = "waypoint";
 const SESSION_KEY = "waypoint.portal.authed";
+const WORLD_KEY = "waypoint.portal.world_id";
 const DRIVE_STEP_PAUSE_MS = 0;
 const DRIVE_JPEG_QUALITY = 70;
 const DRIVE_VIDEO_FPS = 60;
@@ -57,6 +58,7 @@ type Health = {
     memory_reserved_mb?: number;
   };
   queue?: QueueHealth;
+  worlds?: WorldHealth;
 };
 
 type ResolutionOption = {
@@ -97,6 +99,16 @@ type QueueHealth = {
   wait_timeout_seconds: number;
 };
 
+type WorldHealth = {
+  active_world_id?: string | null;
+  active_model?: string;
+  count: number;
+  max_count: number;
+  ttl_seconds: number;
+  seeded_count: number;
+  oldest_idle_seconds: number;
+};
+
 type QueueEvent = {
   ok: true;
   type: "queue" | "queue_start" | "queue_done";
@@ -112,6 +124,7 @@ type StreamEvent =
   | {
       ok: true;
       type: "frame";
+      world_id?: string;
       frame: string;
       frame_mime?: string;
       frame_width?: number;
@@ -145,6 +158,7 @@ type StreamEvent =
   | {
       ok: true;
       type: "done";
+      world_id?: string;
       steps: number;
       frame_count?: number;
       total_seconds: number;
@@ -198,6 +212,13 @@ const defaultResolutions: ResolutionOption[] = [
   { key: "360p", label: "360P", width: 640, height: 360 },
 ];
 
+function createWorldId() {
+  if ("crypto" in window && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `world-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem(SESSION_KEY) === "true");
   const [password, setPassword] = useState("");
@@ -209,6 +230,13 @@ function App() {
   const [driveFrames, setDriveFrames] = useState(0);
   const [steps, setSteps] = useState(1);
   const [resolution, setResolution] = useState("720p");
+  const [worldId, setWorldId] = useState(() => {
+    const existing = localStorage.getItem(WORLD_KEY);
+    if (existing) return existing;
+    const next = createWorldId();
+    localStorage.setItem(WORLD_KEY, next);
+    return next;
+  });
   const [reset, setReset] = useState(true);
   const [buttons, setButtons] = useState<number[]>([87]);
   const [mouseX, setMouseX] = useState(0);
@@ -242,7 +270,7 @@ function App() {
   const previewUrlsRef = useRef<string[]>([]);
   const frameSizeRef = useRef({ width: FRAME_WIDTH, height: FRAME_HEIGHT });
   const videoUrlRef = useRef("");
-  const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset, resolution });
+  const controlsRef = useRef({ buttons, mouseX, mouseY, seedImage, reset, resolution, worldId });
 
   const activeButtonLabels = useMemo(
     () => controlButtons.filter((item) => buttons.includes(item.code)).map((item) => item.label),
@@ -257,8 +285,8 @@ function App() {
   }, [authed]);
 
   useEffect(() => {
-    controlsRef.current = { buttons, mouseX, mouseY, seedImage, reset, resolution };
-  }, [buttons, mouseX, mouseY, seedImage, reset, resolution]);
+    controlsRef.current = { buttons, mouseX, mouseY, seedImage, reset, resolution, worldId };
+  }, [buttons, mouseX, mouseY, seedImage, reset, resolution, worldId]);
 
   const resolutionOptions = health?.models?.length ? health.models : defaultResolutions;
 
@@ -335,6 +363,21 @@ function App() {
     setRecordedFrames(0);
     clearPreviewUrls();
     clearVideoUrl();
+  }
+
+  function startNewWorld() {
+    const next = createWorldId();
+    localStorage.setItem(WORLD_KEY, next);
+    setWorldId(next);
+    setReset(true);
+    setFrames([]);
+    setDisplayFrame(null);
+    setHasLiveFrame(false);
+    setLastRun(null);
+    setPerf(null);
+    setQueue(null);
+    resetDriveCapture();
+    addLog("world", "new world");
   }
 
   function recordDriveFrame(frame: RecordedFrame) {
@@ -474,6 +517,7 @@ function App() {
       const payload = await callApi<GenerateResponse>("generate", {
         steps,
         model: resolution,
+        world_id: worldId,
         reset,
         button: buttons,
         mouse: [mouseX, mouseY],
@@ -646,6 +690,7 @@ function App() {
         format: "jpeg",
         quality: DRIVE_JPEG_QUALITY,
         model: current.resolution,
+        world_id: current.worldId,
         reset: firstStep ? current.reset : false,
         button: current.buttons,
         mouse,
@@ -859,7 +904,7 @@ function App() {
   async function resetWorld() {
     setBusy(true);
     try {
-      await callApi("reset", { model: resolution });
+      await callApi("reset", { model: resolution, world_id: worldId });
       setReset(true);
       setFrames([]);
       setDisplayFrame(null);
@@ -996,6 +1041,14 @@ function App() {
                 <dt>Queue</dt>
                 <dd>{queueText}</dd>
               </div>
+              <div>
+                <dt>World</dt>
+                <dd>{worldId.slice(0, 8)}</dd>
+              </div>
+              <div>
+                <dt>Worlds</dt>
+                <dd>{health?.worlds ? `${health.worlds.count}/${health.worlds.max_count}` : "..."}</dd>
+              </div>
             </dl>
           </div>
 
@@ -1112,6 +1165,10 @@ function App() {
                 Clear Seed
               </button>
             ) : null}
+            <button className="ghost wide" onClick={startNewWorld} disabled={streaming || busy}>
+              <RotateCcw size={18} />
+              New World
+            </button>
           </div>
 
           <div className="panel-section actions">
