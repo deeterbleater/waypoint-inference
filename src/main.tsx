@@ -56,6 +56,7 @@ type Health = {
     memory_allocated_mb?: number;
     memory_reserved_mb?: number;
   };
+  queue?: QueueHealth;
 };
 
 type ResolutionOption = {
@@ -86,6 +87,27 @@ type FrameTimings = {
   total_ms?: number;
 };
 
+type QueueHealth = {
+  active: boolean;
+  active_ticket?: number | null;
+  active_label?: string | null;
+  depth: number;
+  max_size: number;
+  completed: number;
+  wait_timeout_seconds: number;
+};
+
+type QueueEvent = {
+  ok: true;
+  type: "queue" | "queue_start" | "queue_done";
+  ticket: number;
+  label: string;
+  position: number;
+  depth: number;
+  active: boolean;
+  wait_seconds: number;
+};
+
 type StreamEvent =
   | {
       ok: true;
@@ -108,6 +130,7 @@ type StreamEvent =
       frame_number: number;
       timings: FrameTimings;
     }
+  | QueueEvent
   | {
       ok: true;
       type: "frame_batch";
@@ -200,6 +223,7 @@ function App() {
   const [previewFrames, setPreviewFrames] = useState<PreviewFrame[]>([]);
   const [frameSize, setFrameSize] = useState({ width: FRAME_WIDTH, height: FRAME_HEIGHT });
   const [perf, setPerf] = useState<FrameTimings | null>(null);
+  const [queue, setQueue] = useState<QueueEvent | null>(null);
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
   const [recordedFrames, setRecordedFrames] = useState(0);
   const [videoUrl, setVideoUrl] = useState("");
@@ -395,6 +419,14 @@ function App() {
     await drawFrameBlob(blob, event.frame_width, event.frame_height);
   }
 
+  function applyQueueEvent(event: QueueEvent) {
+    setQueue(event.type === "queue_done" ? null : event);
+  }
+
+  function isQueueEvent(event: StreamEvent | BinaryStreamEvent): event is QueueEvent {
+    return event.type === "queue" || event.type === "queue_start" || event.type === "queue_done";
+  }
+
   function unlock(event: FormEvent) {
     event.preventDefault();
     if (password === PORTAL_PASSWORD) {
@@ -490,7 +522,9 @@ function App() {
         if (!event.ok) {
           throw new Error(event.error);
         }
-        if (event.type === "frame") {
+        if (isQueueEvent(event)) {
+          applyQueueEvent(event);
+        } else if (event.type === "frame") {
           const frameMime = event.frame_mime || "image/jpeg";
           const blob = base64ToBlob(event.frame, frameMime);
           recordDriveFrame({ frame: event.frame, mime: frameMime });
@@ -550,7 +584,9 @@ function App() {
     if (!event.ok) {
       throw new Error(event.error);
     }
-    if (event.type === "frame") {
+    if (isQueueEvent(event)) {
+      applyQueueEvent(event);
+    } else if (event.type === "frame") {
       const frameMime = event.frame_mime || "image/jpeg";
       const imageCopy = new Uint8Array(imageBytes.byteLength);
       imageCopy.set(imageBytes);
@@ -638,6 +674,7 @@ function App() {
     resetDriveCapture();
     setStreaming(true);
     setDriveFrames(0);
+    setQueue(null);
     addLog("drive", "started");
 
     let firstStep = true;
@@ -656,6 +693,7 @@ function App() {
       }
     } finally {
       setStreaming(false);
+      setQueue(null);
       abortRef.current = null;
       void fetchHealth();
     }
@@ -886,6 +924,17 @@ function App() {
 
   const latestPreviewFrame = previewFrames.at(-1);
   const hasOutput = hasLiveFrame || frames.length > 0 || previewFrames.length > 0;
+  const queueDepth = queue?.depth ?? health?.queue?.depth ?? 0;
+  const queueActive = queue?.active ?? health?.queue?.active ?? false;
+  const queueText = queue
+    ? queue.active
+      ? `active after ${queue.wait_seconds.toFixed(1)}s`
+      : `#${queue.position} / ${queue.depth}`
+    : queueDepth
+      ? `${queueDepth} waiting`
+      : queueActive
+        ? "active"
+        : "clear";
   const perfSummary = perf
     ? `gen ${Math.round(perf.gen_ms || 0)}ms, decode ${Math.round(perf.decode_ms || 0)}ms, encode ${Math.round(
         perf.encode_ms || 0,
@@ -942,6 +991,10 @@ function App() {
               <div>
                 <dt>Encode</dt>
                 <dd>{perf?.encode_ms !== undefined ? `${Math.round(perf.encode_ms)} ms` : "..."}</dd>
+              </div>
+              <div>
+                <dt>Queue</dt>
+                <dd>{queueText}</dd>
               </div>
             </dl>
           </div>
@@ -1111,7 +1164,7 @@ function App() {
               <h2>Frames</h2>
               <p>
                 {streaming
-                  ? `${Math.max(driveFrames, frames.length)} streamed frames, mouse ${lastMouseSent.x} ${lastMouseSent.y}${perfSummary ? `, ${perfSummary}` : ""}`
+                  ? `${Math.max(driveFrames, frames.length)} streamed frames, queue ${queueText}, mouse ${lastMouseSent.x} ${lastMouseSent.y}${perfSummary ? `, ${perfSummary}` : ""}`
                   : lastRun
                     ? `${recordedFrames || lastRun.frame_count} frames, ${videoUrl ? videoMime || "video ready" : activeButtonLabels.join("+") || "idle"}`
                     : "Awaiting generation"}
